@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>房地合一自住優惠與重購退稅檢核系統</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; }
+        .timeline-line { position: absolute; left: 15px; top: 0; bottom: 0; width: 2px; background-color: #e5e7eb; z-index: 0; }
+        .timeline-dot { position: relative; z-index: 1; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        // 客製化：民國年下拉選單元件
+        const ROCDateInput = ({ value, onChange, label }) => {
+            const [y, setY] = useState('');
+            const [m, setM] = useState('');
+            const [d, setD] = useState('');
+
+            useEffect(() => {
+                if (value) {
+                    const parsed = new Date(value);
+                    if (!isNaN(parsed)) {
+                        setY(parsed.getFullYear() - 1911);
+                        setM(parsed.getMonth() + 1);
+                        setD(parsed.getDate());
+                    }
+                } else {
+                    setY(''); setM(''); setD('');
+                }
+            }, [value]);
+
+            const handleChange = (newY, newM, newD) => {
+                setY(newY); setM(newM); setD(newD);
+                if (newY && newM && newD) {
+                    const fullYear = parseInt(newY) + 1911;
+                    const monthStr = String(newM).padStart(2, '0');
+                    const dayStr = String(newD).padStart(2, '0');
+                    onChange(fullYear + "-" + monthStr + "-" + dayStr);
+                } else {
+                    onChange('');
+                }
+            };
+
+            const years = Array.from({length: 80}, (_, i) => 125 - i);
+            const months = Array.from({length: 12}, (_, i) => i + 1);
+            const daysInMonth = (y && m) ? new Date(parseInt(y) + 1911, parseInt(m), 0).getDate() : 31;
+            const days = Array.from({length: daysInMonth}, (_, i) => i + 1);
+
+            return (
+                <div className="flex flex-col mb-2">
+                    <label className="text-sm font-medium text-gray-700 mb-1">{label}</label>
+                    <div className="flex gap-2">
+                        <select value={y} onChange={e => handleChange(e.target.value, m, d)} className="flex-1 rounded border-gray-300 p-2 border bg-white text-sm shadow-sm">
+                            <option value="">民國年</option>
+                            {years.map(year => <option key={year} value={year}>{year}</option>)}
+                        </select>
+                        <select value={m} onChange={e => handleChange(y, e.target.value, d)} className="flex-1 rounded border-gray-300 p-2 border bg-white text-sm shadow-sm">
+                            <option value="">月</option>
+                            {months.map(month => <option key={month} value={month}>{month}</option>)}
+                        </select>
+                        <select value={d} onChange={e => handleChange(y, m, e.target.value)} className="flex-1 rounded border-gray-300 p-2 border bg-white text-sm shadow-sm">
+                            <option value="">日</option>
+                            {days.map(day => <option key={day} value={day}>{day}</option>)}
+                        </select>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            // 日期狀態
+            const [oldAcquireDate, setOldAcquireDate] = useState('');
+            const [oldRegDate, setOldRegDate] = useState('');
+            const [oldSaleDate, setOldSaleDate] = useState('');
+            const [newAcquireDate, setNewAcquireDate] = useState('');
+            const [newRegDate, setNewRegDate] = useState('');
+
+            // 設籍對象
+            const [oldRegSelf, setOldRegSelf] = useState(true);
+            const [oldRegSpouse, setOldRegSpouse] = useState(false);
+            const [oldRegMinor, setOldRegMinor] = useState(false);
+            const [newRegSelf, setNewRegSelf] = useState(true);
+            const [newRegSpouse, setNewRegSpouse] = useState(false);
+            const [newRegMinor, setNewRegMinor] = useState(false);
+
+            // 條件狀態
+            const [isSameOwner, setIsSameOwner] = useState('yes');
+            const [hasActualResidence, setHasActualResidence] = useState('yes');
+            const [noRentBiz1Year, setNoRentBiz1Year] = useState('yes');
+            const [noRentBiz6Years, setNoRentBiz6Years] = useState('yes');
+            const [newNoRentBiz, setNewNoRentBiz] = useState('yes');
+            const [usedExemption6Years, setUsedExemption6Years] = useState('no');
+            const [post5YearViolation, setPost5YearViolation] = useState('no');
+            const [post5YearException, setPost5YearException] = useState('na');
+
+            const calculateDays = (d1, d2) => {
+                if (!d1 || !d2) return null;
+                const diffTime = Math.abs(new Date(d2) - new Date(d1));
+                return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            };
+
+            const calculateYears = (d1, d2) => {
+                const days = calculateDays(d1, d2);
+                return days ? (days / 365.25).toFixed(2) : null;
+            };
+
+            const formatROC = (d) => {
+                if (!d) return '';
+                const date = new Date(d);
+                return "民國 " + (date.getFullYear() - 1911) + " 年 " + (date.getMonth() + 1) + " 月 " + date.getDate() + " 日";
+            };
+
+            // 檢核邏輯
+            const evaluation = useMemo(() => {
+                let exemption4M = { pass: false, reasons: [] };
+                let refund = { pass: false, reasons: [] };
+
+                // 400M 免稅檢核
+                if (!oldAcquireDate || !oldRegDate || !oldSaleDate) {
+                    exemption4M.reasons.push("請完整填寫舊屋取得、設籍與出售日期。");
+                } else {
+                    const holdYears = calculateYears(oldAcquireDate, oldSaleDate);
+                    const regYears = calculateYears(oldRegDate, oldSaleDate);
+                    if (holdYears < 6 || regYears < 6) {
+                        exemption4M.reasons.push("舊屋持有且設籍未連續滿 6 年 (目前約 " + (holdYears || 0) + " 年)。");
+                    }
+                    if (!oldRegSelf && !oldRegSpouse && !oldRegMinor) exemption4M.reasons.push("未勾選設籍對象。");
+                    if (hasActualResidence === 'no') exemption4M.reasons.push("無實際居住事實。");
+                    if (noRentBiz6Years === 'no') exemption4M.reasons.push("交易前 6 年內曾出租或供營業使用。");
+                    if (usedExemption6Years === 'yes') exemption4M.reasons.push("6 年內曾適用過此優惠。");
+                    if (exemption4M.reasons.length === 0) exemption4M.pass = true;
+                }
+
+                // 重購退稅檢核
+                if (!oldSaleDate || !newAcquireDate) {
+                    refund.reasons.push("請完整填寫日期以計算重購間距。");
+                } else {
+                    const gapYears = calculateYears(oldSaleDate, newAcquireDate);
+                    if (gapYears > 2) refund.reasons.push("新舊屋移轉間隔超過 2 年。");
+                    if (isSameOwner === 'no') refund.reasons.push("所有權人非本人或配偶。");
+                    if (!newRegDate || (!newRegSelf && !newRegSpouse && !newRegMinor)) refund.reasons.push("新屋尚未設籍。");
+                    if (hasActualResidence === 'no') refund.reasons.push("無實際居住事實。");
+                    if (noRentBiz1Year === 'no') refund.reasons.push("舊屋出售前 1 年內曾出租或營業。");
+                    if (newNoRentBiz === 'no') refund.reasons.push("新屋購入後曾出租或營業。");
+                    if (post5YearViolation === 'yes' && post5YearException !== 'yes') refund.reasons.push("5 年內有遷出或改作他用之虞且無例外情形。");
+                    if (refund.reasons.length === 0) refund.pass = true;
+                }
+
+                return { exemption4M, refund };
+            }, [oldAcquireDate, oldRegDate, oldSaleDate, newAcquireDate, newRegDate, isSameOwner, hasActualResidence, noRentBiz1Year, noRentBiz6Years, newNoRentBiz, usedExemption6Years, post5YearViolation, post5YearException, oldRegSelf, oldRegSpouse, oldRegMinor, newRegSelf, newRegSpouse, newRegMinor]);
+
+            // 時間軸數據
+            const timelineEvents = useMemo(() => {
+                const events = [];
+                if (oldAcquireDate) events.push({ date: new Date(oldAcquireDate), label: '舊屋取得', color: 'bg-blue-500' });
+                if (oldRegDate) events.push({ date: new Date(oldRegDate), label: '舊屋設籍', color: 'bg-blue-400' });
+                if (oldSaleDate) events.push({ date: new Date(oldSaleDate), label: '舊屋出售', color: 'bg-red-500' });
+                if (newAcquireDate) events.push({ date: new Date(newAcquireDate), label: '新屋重購', color: 'bg-green-500' });
+                if (newRegDate) events.push({ date: new Date(newRegDate), label: '新屋設籍', color: 'bg-green-400' });
+                return events.sort((a, b) => a.date - b.date).map(e => ({ ...e, dateStr: formatROC(e.date) }));
+            }, [oldAcquireDate, oldRegDate, oldSaleDate, newAcquireDate, newRegDate]);
+
+            const ganttBounds = useMemo(() => {
+                if (timelineEvents.length < 2) return { min: 0, duration: 1 };
+                const min = Math.min(...timelineEvents.map(e => e.date.getTime()));
+                const max = Math.max(...timelineEvents.map(e => e.date.getTime()));
+                return { min, duration: max - min || 1 };
+            }, [timelineEvents]);
+
+            return (
+                <div className="max-w-7xl mx-auto p-4 md:p-8">
+                    {/* Header */}
+                    <div className="bg-white rounded-xl shadow-md p-6 border-t-4 border-indigo-600 mb-6">
+                        <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                            房地合一稅自住優惠與重購退稅檢核系統
+                        </h1>
+                        <p className="text-sm text-gray-500 mt-2">僅適用於 105 年 1 月 1 日以後取得之房屋土地交易新制。</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* Left: Input Form */}
+                        <div className="lg:col-span-2 space-y-6">
+                            <section className="bg-white rounded-xl shadow-md p-6">
+                                <h2 className="text-lg font-bold text-gray-700 border-b pb-2 mb-4">一、日期與產權檢核</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div>
+                                        <ROCDateInput label="舊屋取得日期" value={oldAcquireDate} onChange={setOldAcquireDate} />
+                                        {oldAcquireDate && new Date(oldAcquireDate) < new Date('2016-01-01') && (
+                                            <p className="text-red-500 text-[10px] font-bold">⚠️ 此案應屬「舊制」範圍。</p>
+                                        )}
+                                        <ROCDateInput label="舊屋出售日期" value={oldSaleDate} onChange={setOldSaleDate} />
+                                        <div className="mt-4">
+                                            <label className="text-sm font-medium text-gray-700">新舊屋所有權人關係？</label>
+                                            <select value={isSameOwner} onChange={e => setIsSameOwner(e.target.value)} className="w-full mt-1 rounded border-gray-300 p-2 border text-sm">
+                                                <option value="yes">本人或配偶</option>
+                                                <option value="no">非本人及配偶</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div className="bg-blue-50 p-4 rounded-lg">
+                                            <ROCDateInput label="舊屋設籍日期" value={oldRegDate} onChange={setOldRegDate} />
+                                            <div className="mt-2 flex gap-3 text-xs text-blue-800">
+                                                <label className="flex items-center"><input type="checkbox" checked={oldRegSelf} onChange={e => setOldRegSelf(e.target.checked)} className="mr-1"/>本人</label>
+                                                <label className="flex items-center"><input type="checkbox" checked={oldRegSpouse} onChange={e => setOldRegSpouse(e.target.checked)} className="mr-1"/>配偶</label>
+                                                <label className="flex items-center"><input type="checkbox" checked={oldRegMinor} onChange={e => setOldRegMinor(e.target.checked)} className="mr-1"/>未成年子女</label>
+                                            </div>
+                                        </div>
+                                        <div className="bg-green-50 p-4 rounded-lg">
+                                            <ROCDateInput label="新屋重購日期" value={newAcquireDate} onChange={setNewAcquireDate} />
+                                            <ROCDateInput label="新屋設籍日期" value={newRegDate} onChange={setNewRegDate} />
+                                            <div className="mt-2 flex gap-3 text-xs text-green-800">
+                                                <label className="flex items-center"><input type="checkbox" checked={newRegSelf} onChange={e => setNewRegSelf(e.target.checked)} className="mr-1"/>本人</label>
+                                                <label className="flex items-center"><input type="checkbox" checked={newRegSpouse} onChange={e => setNewRegSpouse(e.target.checked)} className="mr-1"/>配偶</label>
+                                                <label className="flex items-center"><input type="checkbox" checked={newRegMinor} onChange={e => setNewRegMinor(e.target.checked)} className="mr-1"/>未成年子女</label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section className="bg-white rounded-xl shadow-md p-6">
+                                <h2 className="text-lg font-bold text-gray-700 border-b pb-2 mb-4">二、居住與使用事實檢核</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                    <div className="space-y-3">
+                                        <label className="block">是否有「實際居住」事實？
+                                            <select value={hasActualResidence} onChange={e => setHasActualResidence(e.target.value)} className="w-full mt-1 border rounded p-1">
+                                                <option value="yes">是 (有水電紀錄)</option><option value="no">否</option>
+                                            </select>
+                                        </label>
+                                        <label className="block">舊屋前 1 年內無出租或營業？
+                                            <select value={noRentBiz1Year} onChange={e => setNoRentBiz1Year(e.target.value)} className="w-full mt-1 border rounded p-1">
+                                                <option value="yes">是</option><option value="no">否</option>
+                                            </select>
+                                        </label>
+                                        <label className="block">舊屋前 6 年內無出租或營業？
+                                            <select value={noRentBiz6Years} onChange={e => setNoRentBiz6Years(e.target.value)} className="w-full mt-1 border rounded p-1">
+                                                <option value="yes">是</option><option value="no">否</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <label className="block text-red-600">重購 5 年內是否改作他用？
+                                            <select value={post5YearViolation} onChange={e => setPost5YearViolation(e.target.value)} className="w-full mt-1 border rounded p-1">
+                                                <option value="no">否</option><option value="yes">是 (含遷出戶籍)</option>
+                                            </select>
+                                        </label>
+                                        {post5YearViolation === 'yes' && (
+                                            <label className="block text-xs bg-yellow-50 p-2 rounded">符合 111.06.09 函令例外情形？
+                                                <select value={post5YearException} onChange={e => setPost5YearException(e.target.value)} className="w-full mt-1 border rounded p-1">
+                                                    <option value="no">否</option><option value="yes">是 (子女就學等)</option>
+                                                </select>
+                                            </label>
+                                        )}
+                                    </div>
+                                </div>
+                            </section>
+                        </div>
+
+                        {/* Right: Results */}
+                        <div className="space-y-6">
+                            <div className="bg-white rounded-xl shadow-md p-6 h-full">
+                                <h2 className="text-lg font-bold text-gray-800 mb-4">檢核結果</h2>
+                                <div className={"p-4 rounded-lg mb-4 border-l-4 " + (evaluation.exemption4M.pass ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500')}>
+                                    <h3 className="font-bold">400萬免稅優惠</h3>
+                                    <p className="text-xs mt-1">{evaluation.exemption4M.pass ? '符合資格' : '不符合'}</p>
+                                    {evaluation.exemption4M.reasons.map((r, i) => <p key={i} className="text-[10px] text-red-600 mt-1">● {r}</p>)}
+                                </div>
+                                <div className={"p-4 rounded-lg border-l-4 " + (evaluation.refund.pass ? 'bg-green-50 border-green-500' : 'bg-red-50 border-red-500')}>
+                                    <h3 className="font-bold">重購退稅資格</h3>
+                                    <p className="text-xs mt-1">{evaluation.refund.pass ? '符合資格' : '不符合'}</p>
+                                    {evaluation.refund.reasons.map((r, i) => <p key={i} className="text-[10px] text-red-600 mt-1">● {r}</p>)}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Bottom: Visuals */}
+                        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="bg-white rounded-xl shadow-md p-6">
+                                <h3 className="font-bold mb-4">事件時間軸</h3>
+                                <div className="relative pl-6 space-y-6">
+                                    <div className="timeline-line"></div>
+                                    {timelineEvents.map((evt, i) => (
+                                        <div key={i} className="relative flex items-start">
+                                            <div className={"timeline-dot w-4 h-4 rounded-full -ml-[31px] mt-1 ring-4 ring-white " + evt.color}></div>
+                                            <div className="ml-2">
+                                                <p className="text-[10px] text-gray-400 font-bold">{evt.dateStr}</p>
+                                                <p className="text-sm font-bold text-gray-700">{evt.label}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="bg-white rounded-xl shadow-md p-6">
+                                <h3 className="font-bold mb-4">持有長度 (甘特圖)</h3>
+                                <div className="space-y-6">
+                                    {timelineEvents.length >= 2 ? (
+                                        <div className="relative">
+                                            <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                                                <span>{timelineEvents[0].dateStr}</span>
+                                                <span>{timelineEvents[timelineEvents.length-1].dateStr}</span>
+                                            </div>
+                                            <div className="w-full bg-gray-100 h-8 rounded-lg overflow-hidden flex">
+                                                <div className="bg-indigo-500 h-full w-full opacity-70"></div>
+                                            </div>
+                                            <p className="text-center text-xs font-bold mt-2">
+                                                總持有：{((ganttBounds.duration / (1000 * 60 * 60 * 24 * 365.25)).toFixed(1))} 年
+                                            </p>
+                                        </div>
+                                    ) : <p className="text-center text-gray-400 py-8 text-sm">輸入日期後顯示圖表</p>}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
